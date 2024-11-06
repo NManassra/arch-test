@@ -1,0 +1,321 @@
+.data
+menuPrompt:    .asciiz "\nMain Menu:\n1. Enter file name to process a system of linear equations\n2. Display results on the screen (enter 's' or 'S')\n3. Save results to an output file (enter 'f' or 'F')\n4. Exit (enter 'e' or 'E')\n\nEnter your choice: "
+inputPrompt:   .asciiz "\nEnter the file name (without path): "
+invalidInput:  .asciiz "\nInvalid input. Please try again.\n"
+fileError:     .asciiz "\nError reading the file. Please ensure the file exists and the format is correct.\n"
+fileEntered:   .asciiz "\nFile name successfully entered. Reading file contents...\n"
+exitMessage:   .asciiz "\nExiting the program. Goodbye!\n"
+newline:       .asciiz "\n"
+fixedPath:     .asciiz "C:/Users/My-Laptop/Desktop/prject1_arch/"
+combinedPath:  .space 512   # Buffer for the combined directory and file name
+buffer:        .space 256   # Buffer for storing user input for file name
+fileWords:     .space 1024  # Buffer for storing file contents
+.align 2                   # Ensure string_array is word-aligned
+string_array: .space 40    # Space for up to 10 pointers (each 4 bytes)
+.align 2                   # Ensure string_buffer is word-aligned
+string_buffer: .space 1000 # Space for storing all strings
+index_msg: .asciiz "String index: "
+
+.text
+.globl main
+
+main:
+    # Infinite loop for the main menu
+    loop:
+        # Display main menu
+        li $v0, 4
+        la $a0, menuPrompt
+        syscall
+
+        # Read user input (character for menu choice)
+        li $v0, 12
+        syscall
+        move $t0, $v0  # Store the user's input character in $t0
+
+        # Check if user pressed '1' to enter the file name
+        li $t1, '1'
+        beq $t0, $t1, enterFileName
+
+        # Check for exit command 'e' or 'E'
+        li $t1, 'e'
+        beq $t0, $t1, exit
+        li $t1, 'E'
+        beq $t0, $t1, exit
+
+        # Check for display results command 's' or 'S'
+        li $t1, 's'
+        beq $t0, $t1, displayResults
+        li $t1, 'S'
+        beq $t0, $t1, displayResults
+
+        # Check for save results command 'f' or 'F'
+        li $t1, 'f'
+        beq $t0, $t1, saveResults
+        li $t1, 'F'
+        beq $t0, $t1, saveResults
+
+        # If input is invalid, display an error message
+        li $v0, 4
+        la $a0, invalidInput
+        syscall
+
+        j loop  # Repeat the loop
+
+    # Subroutine for entering the file name and reading its contents
+    enterFileName:
+        # Prompt user for the input file name
+        li $v0, 4
+        la $a0, inputPrompt
+        syscall
+
+        # Read the filename input
+        li $v0, 8
+        la $a0, buffer  # Buffer to hold the input filename
+        li $a1, 256     # Maximum size for the input
+        syscall
+
+        # Trim any newline characters or trailing spaces from the input
+        jal trimInput
+
+        # Confirm the file entry
+        li $v0, 4
+        la $a0, fileEntered
+        syscall
+
+        # Combine the fixed path and the user-provided filename
+        la $t0, fixedPath      # Load the fixed path address into $t0
+        la $t1, combinedPath   # Load the combined path buffer address into $t1
+        jal copyString         # Copy the fixed path into the combined path buffer
+
+        la $t0, buffer         # Load the trimmed user-provided filename address into $t0
+        jal appendString       # Append the filename to the combined path buffer
+
+        # Open the file for reading using the combined path
+        li $v0, 13            # open_file syscall code
+        la $a0, combinedPath  # Combined path as the filename
+        li $a1, 0             # File flag = read mode
+        syscall
+        move $s0, $v0         # Save the file descriptor
+
+        # Check if file opened successfully
+        bltz $s0, fileErrorRoutine  # If $s0 < 0, an error occurred
+
+        # Read the contents of the file into the buffer
+        li $v0, 14            # read_file syscall code
+        move $a0, $s0         # File descriptor
+        la $a1, fileWords     # Buffer to hold file contents
+        li $a2, 1024          # Size of buffer
+        syscall
+        
+        # Close the file
+        li $v0, 16            # close_file syscall code
+        move $a0, $s0         # File descriptor to close
+        syscall
+        
+            la $t0, fileWords       # Load address of fileWords into $t0
+    la $t1, string_buffer # Load address of the main string buffer into $t1
+    la $t2, string_array  # Load address of the string array into $t2 (word-aligned)
+    li $t3, 0            # Initialize line counter within a group
+    li $t4, 0            # Initialize `+` counter
+    li $t5, 0            # Offset for string buffer
+    li $t6, 1            # Counter for number of groups
+    li $s0, 0            # Tracks if we are in the first line of a group
+
+process_buffer:
+    lb $t7, 0($t0)       # Load current character from buffer into $t7
+    beqz $t7, print_strings  # If null terminator, go to print
+
+    # Copy character to the current string buffer
+    sb $t7, 0($t1)
+    addi $t1, $t1, 1     # Move to the next character in the current string buffer
+
+    # Check if the character is a newline
+    beq $t7, '\n', handle_newline
+
+    # Check if the character is a `+`
+    beq $t7, '+', increment_plus_count
+
+    addi $t0, $t0, 1     # Move to the next character in the buffer
+    j process_buffer
+
+increment_plus_count:
+    addi $t4, $t4, 1     # Increment `+` counter
+    addi $t0, $t0, 1     # Move to the next character in the buffer
+    j process_buffer
+
+handle_newline:
+    addi $t3, $t3, 1     # Increment line counter within a group
+    addi $t0, $t0, 1     # Move past the newline character
+
+    # If this is the first line in a group, determine the number of lines needed
+    beqz $s0, set_group_criteria
+
+    # Check if we have accumulated the required number of lines
+    bge $t3, $s0, save_group
+    j process_buffer     # Continue processing if not enough lines
+
+set_group_criteria:
+    # Set the number of lines needed for the group based on the first line's `+` count
+    li $t8, 2            # Threshold for 2 `+` signs
+    bgt $t4, $t8, set_three_line_group
+    li $t8, 1            # Threshold for 1 `+` sign
+    beq $t4, $t8, set_two_line_group
+    j process_buffer     # Continue processing if criteria not met
+
+set_three_line_group:
+    li $s0, 3            # Set the group to require three lines
+    j process_buffer
+
+set_two_line_group:
+    li $s0, 2            # Set the group to require two lines
+    j process_buffer
+
+save_group:
+    # Null-terminate the current string group
+    li $t7, 0
+    sb $t7, 0($t1)
+
+    # Store the current offset in the array
+    sw $t5, 0($t2)       # Store the current offset in the array
+    addi $t2, $t2, 4     # Move to the next word-aligned address in the array
+    addi $t6, $t6, 1     # Increment group counter
+
+    # Prepare for the next group
+    add $t5, $t5, 100    # Move string buffer offset for the next group space
+    la $t1, string_buffer
+    add $t1, $t1, $t5    # Set $t1 to the new string buffer position
+    li $t4, 0            # Reset `+` counter
+    li $t3, 0            # Reset line counter
+    li $s0, 0            # Reset first-line flag
+    j process_buffer
+
+print_strings:
+    # Print all groups stored in the array
+    li $t9, 0          # Initialize print loop counter
+    la $t2, string_array # Reset pointer to the start of the array
+
+print_loop:
+    beq $t9, $t6, end    # If we reach the number of groups, end loop
+
+    # Print the group index
+    li $v0, 4            # Print string syscall
+    la $a0, index_msg
+    syscall
+
+    # Print the index number
+    move $a0, $t9        # Load index into $a0
+    li $v0, 1            # Print integer syscall
+    syscall
+
+    # Print newline after the index
+    la $a0, newline
+    li $v0, 4
+    syscall
+
+    # Load the group offset and add to string_buffer to get the full address
+    lw $t8, 0($t2)
+    la $a0, string_buffer
+    add $a0, $a0, $t8    # Add offset to base address
+
+    li $v0, 4            # Print string syscall
+    syscall
+
+    # Print newline after each group
+    la $a0, newline
+    li $v0, 4
+    syscall
+
+    addi $t2, $t2, 4     # Move to the next pointer in the array
+    addi $t9, $t9, 1     # Increment loop counter
+    j print_loop
+
+end:
+        j loop  # Return to main loop
+
+    # Subroutine to trim newline and trailing spaces from buffer
+    trimInput:
+        la $t2, buffer        # Load the address of the buffer
+        add $t3, $zero, $t2   # Pointer to traverse the buffer
+        trimLoop:
+            lb $t4, 0($t3)    # Load current byte
+            beqz $t4, trimEnd # Stop if null terminator
+            addi $t3, $t3, 1  # Move to the next byte
+            j trimLoop
+        trimEnd:
+            addi $t3, $t3, -1 # Move back to the last character
+        trimBack:
+            lb $t4, 0($t3)    # Load the byte at the current position
+            beq $t4, $zero, endTrimDone # Stop if already null terminator
+            beq $t4, 32, trimRemove # Check for space character
+            beq $t4, 10, trimRemove # Check for newline character
+            jr $ra            # Return if no trimming needed
+        trimRemove:
+            sb $zero, 0($t3)  # Replace with null terminator
+            addi $t3, $t3, -1 # Move back to the previous character
+            j trimBack
+        endTrimDone:
+            jr $ra            # Return from subroutine
+
+    # Subroutine to copy a string from $t0 to $t1
+    copyString:
+        lb $t2, 0($t0)      # Load byte from source
+        beqz $t2, endCopy   # If null terminator, end copying
+        sb $t2, 0($t1)      # Store byte in destination
+        addi $t0, $t0, 1    # Increment source pointer
+        addi $t1, $t1, 1    # Increment destination pointer
+        j copyString        # Repeat the process
+    endCopy:
+        sb $zero, 0($t1)    # Add null terminator
+        jr $ra              # Return from subroutine
+
+    # Subroutine to append a string from $t0 to $t1
+    appendString:
+        # Move $t1 to the end of the current string
+        appendFindEnd:
+            lb $t2, 0($t1)
+            beqz $t2, appendStart  # Stop when null terminator is found
+            addi $t1, $t1, 1       # Move to the next byte
+            j appendFindEnd
+
+        # Copy the string from $t0 to $t1
+        appendStart:
+            lb $t2, 0($t0)      # Load byte from source
+            beqz $t2, endAppend # If null terminator, end copying
+            sb $t2, 0($t1)      # Store byte in destination
+            addi $t0, $t0, 1    # Increment source pointer
+            addi $t1, $t1, 1    # Increment destination pointer
+            j appendStart       # Repeat the process
+        endAppend:
+            sb $zero, 0($t1)    # Add null terminator
+            jr $ra              # Return from subroutine
+
+    # Subroutine to handle file open/read errors
+    fileErrorRoutine:
+        li $v0, 4
+        la $a0, fileError
+        syscall
+        j loop  # Return to main loop
+
+    # Placeholder subroutine for displaying results
+    displayResults:
+        # Currently just a placeholder; can be implemented as needed
+        li $v0, 4
+        la $a0, newline  # Print a newline to indicate returning to menu
+        syscall
+        j loop  # Return to main loop
+
+    # Placeholder subroutine for saving results to a file
+    saveResults:
+        # Placeholder; add implementation if needed
+        li $v0, 4
+        la $a0, newline  # Print a newline to indicate returning to menu
+        syscall
+        j loop  # Return to main loop
+
+    # Exit subroutine
+    exit:
+        li $v0, 4
+        la $a0, exitMessage
+        syscall
+        li $v0, 10  # Exit system call
+        syscall
